@@ -30,7 +30,7 @@ public class RpcClient {
     private final int port;
     private Channel channel;
     private EventLoopGroup group;
-//    private final ConcurrentMap<String, RpcFuture> pendingRequests = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, RpcFuture> pendingRequests = new ConcurrentHashMap<>();
 
     public RpcClient(String host, int port) {
         this.host = host;
@@ -52,12 +52,13 @@ public class RpcClient {
                                     new LengthFieldBasedFrameDecoder(Integer.MAX_VALUE, 0, 4, 0, 4),
                                     new LengthFieldPrepender(4),
                                     new ObjectEncoder(),
-                                    new ObjectDecoder(ClassResolvers.cacheDisabled(null))
-//                                    new RpcClientHandler(pendingRequests)
+                                    new ObjectDecoder(ClassResolvers.cacheDisabled(null)),
+                                    new RpcClientHandler(pendingRequests)
                             );
                         }
                     });
 
+            // 同步等待连接完成
             ChannelFuture future = b.connect(host, port).sync();
             channel = future.channel();
         } catch (Exception e) {
@@ -86,50 +87,52 @@ public class RpcClient {
     }
 
     // 发送请求
-    public ChannelFuture sendRequest(RpcRequest request) {
-//        RpcFuture future = new RpcFuture(request);
-//        pendingRequests.put(request.getRequestId(), future);
+    public RpcFuture sendRequest(RpcRequest request) {
+        // 检查连接状态
+        if (channel == null || !channel.isActive()) {
+            try {
+                // 尝试重新连接
+                connect();
+            } catch (Exception e) {
+                throw new RuntimeException("Failed to reconnect to server", e);
+            }
+        }
+        RpcFuture future = new RpcFuture(request);
+        pendingRequests.put(request.getRequestId(), future);
 
         try {
-            return channel.writeAndFlush(request).addListener(new ChannelFutureListener() {
-                @Override
-                public void operationComplete(ChannelFuture future) throws Exception {
-                    if (!future.isSuccess()) {
-                        System.err.println("Failed to send request: " + future.cause().getMessage());
-                        // 处理发送失败的情况
-                    }
-                }
-            });
+            channel.writeAndFlush(request).addListener((ChannelFutureListener) future);
+            System.out.println("Sending request: " + request.getRequestId() + " to " + host + ":" + port);
         } catch (Exception e) {
-//            pendingRequests.remove(request.getRequestId());
+            pendingRequests.remove(request.getRequestId());
+            future.setFailure(e);
         }
-
-        return null;
+        return future;
     }
 }
 
-///**
-// * RPC 客户端处理器
-// */
-//class RpcClientHandler extends SimpleChannelInboundHandler<RpcResponse> {
-//    private final ConcurrentMap<String, RpcFuture> pendingRequests;
-//
-//    public RpcClientHandler(ConcurrentMap<String, RpcFuture> pendingRequests) {
-//        this.pendingRequests = pendingRequests;
-//    }
-//
-//    @Override
-//    protected void channelRead0(ChannelHandlerContext ctx, RpcResponse response) throws Exception {
-//        String requestId = response.getRequestId();
-//        RpcFuture future = pendingRequests.remove(requestId);
-//        if (future != null) {
-//            future.setSuccess(response);
-//        }
-//    }
-//
-//    @Override
-//    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
-//        System.err.println("Client exception: " + cause.getMessage());
-//        ctx.close();
-//    }
-//}
+/**
+ * RPC 客户端处理器
+ */
+class RpcClientHandler extends SimpleChannelInboundHandler<RpcResponse> {
+    private final ConcurrentMap<String, RpcFuture> pendingRequests;
+
+    public RpcClientHandler(ConcurrentMap<String, RpcFuture> pendingRequests) {
+        this.pendingRequests = pendingRequests;
+    }
+
+    @Override
+    protected void channelRead0(ChannelHandlerContext ctx, RpcResponse response) throws Exception {
+        String requestId = response.getRequestId();
+        RpcFuture future = pendingRequests.remove(requestId);
+        if (future != null) {
+            future.setSuccess(response);
+        }
+    }
+
+    @Override
+    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
+        System.err.println("Client exception: " + cause.getMessage());
+        ctx.close();
+    }
+}

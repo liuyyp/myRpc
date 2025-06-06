@@ -25,17 +25,21 @@ public class RpcInvocationHandler implements InvocationHandler {
         request.setMethodName(method.getName());
         request.setParameterTypes(method.getParameterTypes());
         request.setParameters(args);
+        try {
+            client.connect();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+        RpcFuture channelFuture = client.sendRequest(request);
 
-        ChannelFuture channelFuture = client.sendRequest(request);
-        channelFuture.get(); // 同步等待结果
+        RpcResponse response = (RpcResponse) channelFuture.get(); // 同步等待结果
+        System.out.println("Received response for request");
+        client.close();
 
-//        RpcResponse response = (RpcResponse) channelFuture.get(); // 同步等待结果
+        if (response.getException() != null) {
+            throw response.getException();
+        }
 
-//        if (response.getException() != null) {
-//            throw response.getException();
-//        }
-
-//        return response.getResult();
-        return null;
+        return response.getResult();
     }
 }
